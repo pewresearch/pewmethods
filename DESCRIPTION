@@ -1,0 +1,31 @@
+Package: pewmethods
+Title: Pew Research Center Methods Miscellaneous Functions
+Version: 1.0
+Authors@R: c(
+    person("Arnold", "Lau", email = "info@pewresearch.org", role = c("aut", "cre")),
+    person("Andrew", "Mercer", email = "info@pewresearch.org", role = "aut"),
+    person("Nick", "Hatley", email = "info@pewresearch.org", role = "aut"))
+Description: Some tools for working with survey data that we've developed over the last couple of years, including functions that create quick weighted crosstabs, facilitate survey weighting, ease recoding variables, and extract elements from files originating from SPSS.
+Depends:
+    R (>= 3.5)
+Imports:
+    dplyr,
+    tibble,
+    tidyr,
+    purrr,
+    forcats,
+    stringr,
+    haven,
+    survey,
+    rlang,
+    mice,
+    ranger,
+    openxlsx
+Suggests: 
+    knitr, 
+    rmarkdown
+VignetteBuilder: knitr
+License: MIT
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.0.2

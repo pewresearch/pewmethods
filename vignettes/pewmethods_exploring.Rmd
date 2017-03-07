@@ -1,0 +1,167 @@
+---
+title: "Exploring survey data with pewmethods"
+output: 
+    rmarkdown::html_vignette:
+          toc: true
+vignette: >
+  %\VignetteIndexEntry{Exploring survey data with pewmethods}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, collapse = TRUE)
+options(tibble.print_min = 6L, tibble.print_max = 6L)
+```
+
+```{r load_packages, echo = FALSE}
+library(pewmethods)
+library(tidyverse)
+```
+
+In this vignette, I'll go through the process of exploring survey data in R using `pewmethods`, including recoding and collapsing data and displaying weighted estimates of categorical variables. Throughout these examples, I'll make extensive use of the `tidyverse` set of R packages, which is a great tool for data manipulation and which we highly recommend using along with `pewmethods`. You can learn more about `tidyverse` in this [blog post](https://link.medium.com/PpKzdF9VsX).  
+
+## The example dataset
+
+The package includes a survey dataset called `dec13_excerpt`, which contains selected variables from a survey conducted by Pew Research Center in December 2013. The data contains demographics and some outcome variables, as well as survey weights. You can learn more about the details by calling `?dec13_excerpt`.  
+
+```{r display_data}
+dec13_excerpt
+```
+
+Most Pew Research Center survey datasets - as well as those from other organizations - will have one or more variables for the survey weight. This weight is crucial for obtaining correct numbers from the survey data since it allows the sample to resemble the overall U.S. adult population more closely. In `dec13_excerpt`, the weight variable is simply called `weight`, and we'll be using it to look at weighted cross-tabulations of other variables in the dataset.  
+
+## Cleaning and editing survey data
+
+Let's look at some outcome variables:
+
+```{r dec13_excerpt_names}
+names(dec13_excerpt)
+```
+
+We see three variables that look like survey outcomes: `q1`, `q2` and `q45`. Let's take a look at `q1`. As `dec13_excerpt` was originally stored as an IBM SPSS file, we can use the `get_spss_label` function to view the label associated with `q1`, which, for Pew Research Center survey data, will either be the question wording or a brief description:  
+
+```{r get_spss_label_q1}
+get_spss_label(dec13_excerpt, "q1")
+```
+
+`q1` is an Obama approval question, so let's run a quick table:  
+
+```{r tablena_q1}
+tablena(dec13_excerpt$q1)
+```
+
+The `tablena` function in `pewmethods` works the same way as base R's `table` function, except that it tells you the specific object you just ran a table on (along with its class), and will always display any `NA` values rather than hiding them by default.  
+
+Now let's look at `q2`:  
+
+```{r get_spss_label_q2}
+get_spss_label(dec13_excerpt, "q2")
+```
+
+`q2` is actually a direct follow-up to `q1`. After we asked respondents whether they approved or disapproved of Obama, we then asked them whether they did so very strongly or not so strongly. So `q1` and `q2` are best analyzed together.  
+
+We can do so by creating a new variable, which we'll call `obama_approval_scale`, that combines the two into a single variable with the categories `Approve very strongly`, `Approve not so strongly`, `Disapprove not so strongly` and `Disapprove very strongly`, as well as `Don't know/Refused (VOL.)`. The `fct_case_when` function is a straightforward and readable way to create that combined variable. `fct_case_when` is a wrapper around the `case_when` function from dplyr that coerces its output into a factor whose levels are in the order that they were passed into the function.  
+
+We'll create our new `obama_approval_scale` by calling the `mutate` function that can create new variables. For more about how `mutate` and `case_when` work, read our [earlier post](https://medium.com/pew-research-center-decoded/using-tidyverse-tools-with-pew-research-center-survey-data-in-r-bdfe61de0909) about using `tidyverse` tools with Pew Research Center survey data in R.  
+
+```{r fct_case_when_obama}
+dec13_excerpt <- dec13_excerpt %>%
+  mutate(obama_approval_scale = fct_case_when(q1 == "Approve" & q2 == "Very strongly" ~ 
+                                 "Approve very strongly",
+                               q1 == "Approve" & q2 == "Not so strongly" ~
+                                 "Approve not so strongly",
+                               q1 == "Disapprove" & q2 == "Not so strongly" ~
+                                 "Disapprove not so strongly",
+                               q1 == "Disapprove" & q2 == "Very strongly" ~
+                                 "Disapprove very strongly",
+                               TRUE ~ "Don't know/Refused (VOL.)"))
+```
+
+The `TRUE` in the last line means that every case that doesn't fall into one of the above conditions is to be recoded as `Don't know/Refused (VOL.)`.  
+
+Let's view yet another quick table of our new `obama_approval_scale` variable to confirm that all responses were coded correctly:  
+
+```{r tablena_oas}
+tablena(dec13_excerpt$obama_approval_scale)
+```
+
+## Getting weighted estimates with `get_totals`
+
+The all-purpose workhorse function for getting weighted estimates is `get_totals`, which takes a categorical variable (either a character vector or a factor will do) and provides weighted or unweighted percentages or totals for each category. Rather than a table, `get_totals` will instead return a `data.frame`, which allows for more flexible manipulation. 
+
+Let's see what the percentages for each category in `obama_approval_scale` look like, first without any weights:  
+
+```{r get_totals_unw}
+get_totals("obama_approval_scale", dec13_excerpt, digits = 1)
+```
+
+Now let's look at Obama approval using the survey weight in the dataset:  
+
+```{r get_totals_wt}
+get_totals("obama_approval_scale", dec13_excerpt, wt = "weight", digits = 1)
+```
+
+
+The weighted estimate of Obama approval looks quite different from the unweighted estimate. The survey weight in this case adjusts the sample to more closely resemble the U.S. population along a range of demographic variables including sex, education, race, Hispanic origin, census region, population density, and whether respondents have only a landline phone, only a cell phone or both. We can put both the unweighted and weighted estimates side by side to make the comparison clearer via the `include_unw` argument:  
+
+```{r get_totals_unw_wt}
+get_totals("obama_approval_scale", dec13_excerpt, wt = "weight", digits = 1, include_unw = TRUE)
+```
+
+
+Some datasets may come with multiple weights – for example, there may be a weight that accounts only for the initial selection probabilities of each respondent and a weight that also accounts for nonresponse. Occasionally we also construct different weights, perhaps with different weighting variables, as part of the Center's methodological research. `get_totals` can look at weighted estimates using multiple weights in unison - just pass a character vector containing the names of all the weights you want to look at to the `wt` argument.  
+
+`dec13_excerpt`, for example, also comes with separate weights for landline and cellphone respondents, intended primarily for methodologists to assess the differences between the landline and cellphone samples. We can look at `obama_approval_scale` using each weight side by side:  
+
+```{r get_totals_multiple_wts}
+get_totals("obama_approval_scale", dec13_excerpt, wt = c("weight", "llweight", "cellweight"), digits = 1)
+```
+
+## Weighted crosstabs
+
+The `by` argument allows us to make cross-tabulations. For example, let's look at Obama approval by education:  
+
+```{r q1_q2_by}
+get_totals("obama_approval_scale", dec13_excerpt, wt = "weight", by = "receduc", digits = 1)
+```
+
+In that table, the columns add to 100%, allowing you to make a statement like this one "About a quarter (`r get_totals("obama_approval_scale", dec13_excerpt, wt = "weight", by = "receduc") %>% filter(obama_approval_scale == "Approve very strongly") %>% select_at("Coll+") %>% as.numeric() %>% round()`)% of those with bachelor's degrees or higher and `r get_totals("obama_approval_scale", dec13_excerpt, wt = "weight", by = "receduc") %>% filter(obama_approval_scale == "Approve very strongly") %>% select_at("HS grad or less") %>% as.numeric() %>% round()`% of those with a high school education or less approved of Obama very strongly, compared to `r get_totals("obama_approval_scale", dec13_excerpt, wt = "weight", by = "receduc") %>% filter(obama_approval_scale == "Approve very strongly") %>% select_at("Some coll/Assoc degree") %>% as.numeric() %>% round()`% of those with some college or an associate's degree." But bear in mind that a simple crosstab like this can't tell you whether these differences are statistically meaningful or not. You can do statistical testing of survey estimates - with uncertainty intervals - using the `survey` package.    
+
+We can clean the above table up a bit via including the breakdown of Obama approval among the full sample via the `by_total` argument, and by using the `select` function to remove the column that looks at Obama approval among people who didn't answer the education question (which we don't usually need to see). Perhaps we also want to round our numbers to integers:
+
+```{r q1_q2_by_total}
+get_totals("obama_approval_scale", dec13_excerpt, wt = "weight", by = "receduc",
+           by_total = TRUE, digits = 0) %>%
+  select(-`DK/Ref`)
+```
+
+The above table looks at Obama approval among people with different levels of education. But what if we instead wanted to flip the premise and look at education among people with different levels of Obama approval? For output consistency reasons, `get_totals` doesn't allow rows to sum to 100. Instead, you simply flip the `var` argument (the first one) and `by`. 
+
+```{r q1_q2_by_total_flipped}
+get_totals("receduc", dec13_excerpt, wt = "weight", by = "obama_approval_scale",
+           by_total = TRUE, digits = 0)
+```
+
+
+If you pass an argument to `by`, the column names will be the names of the categories of the grouping variable, while the weight will receive its own column called `weight_name`, which is useful when you're looking at multiple weights in unison. If no argument is passed to `by`, then the column names will be the names of the weights used.  
+
+## Producing multiple crosstabs at once  
+
+Surveys often contain a *lot* of questions, and survey researchers often want to create a lot of crosstabs all at once. While each call to `get_totals` only allows one variable to be passed to `var` at a time, multiple crosstabs can easily be created in the same call via the `map` function from the `purrr` package, which is also part of the `tidyverse`. For example, if we want crosstabs for both `obama_approval_scale` and `q45` (Obamacare approval), we can use `map` as follows:  
+
+```{r get_totals_map}
+outcome_variables <- c("obama_approval_scale", "q45")
+my_xtabs <- map(outcome_variables, ~get_totals(.x, dec13_excerpt, wt = "weight",
+                                               by = "receduc", by_total = TRUE, digits = 1) %>%
+                  select(-`DK/Ref`))
+my_xtabs
+```
+
+We've just created a `list` of crosstabs called `my_xtabs`. To save these in a more permanent format, we can write this list of tables to a Microsoft Excel spreadsheet with the `df_list_to_xlsx` function with the following line of code (commented out so that it won't write any files to your system unless you remove the pound sign)`:  
+
+```{r df_list_to_xlsx}
+# df_list_to_xlsx(my_xtabs, sheet_name = "pew_xtabs", outfile = "pewmethods_demo_xtabs.xlsx")
+```
+
+`df_list_to_xlsx` takes a list of `data.frame`s like the crosstabs we just created, as well as arguments for what we want to name the Excel sheet and the file output path. There are optional arguments for adding labels to each crosstab and a title to the top row of the spreadsheet. `df_list_to_xlsx` is also capable of writing an Excel file with multiple sheets. Details can be viewed by calling `?df_list_to_xlsx`.  

@@ -1,0 +1,167 @@
+---
+title: "Weighting survey data with pewmethods"
+output: 
+    rmarkdown::html_vignette:
+          toc: true
+vignette: >
+  %\VignetteIndexEntry{Weighting survey data with pewmethods}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, collapse = TRUE)
+options(tibble.print_min = 6L, tibble.print_max = 6L)
+```
+
+```{r load_packages, echo = FALSE}
+library(pewmethods)
+library(tidyverse)
+```
+
+In this vignette I'll go through the process of weighting and analyzing a survey dataset. Along the way I'll show how to use `pewmethods` to clean and recode the variables we'll use for weighting, create weighting parameters from external data sources, and rake and trim survey weights. Throughout these examples, I'll make extensive use of the `tidyverse` set of R packages, which is a great tool for data manipulation and which we highly recommend using along with `pewmethods`. You can learn more about `tidyverse` in this [blog post](https://link.medium.com/PpKzdF9VsX).  
+
+## The example dataset
+
+The package includes a survey dataset called `dec13_excerpt`, which contains selected variables from a survey conducted by Pew Research Center in December 2013. The data contains demographics and some outcome variables, as well as survey weights. You can learn more about the details by calling `?dec13_excerpt`. 
+
+```{r display_data}
+dec13_excerpt
+```
+
+For simplicity, let's assume we want to weight our survey by the marginal distribution of age and the cross-classification of sex and education. (In practice, we use a number of additional variables and cross-classifications beyond these). Let's run some basic tables on these variables in the `dec13_excerpt` dataset:  
+
+```{r display_tables}
+table(dec13_excerpt$sex)
+table(dec13_excerpt$recage)
+table(dec13_excerpt$receduc)
+```
+
+## Creating weighting targets from population data  
+
+Before we do anything with the survey data itself, we need to get our weighting target parameters - that is, we need to know what the marginal distributions of age and the cross-classification of sex and education look like in the population of interest that we're trying to represent with a survey. We use external benchmark data to create weighting targets that reflect the said population distribution for our chosen weighting variables. These targets are typically derived from population data published by the U.S. Census Bureau or other government agencies. For example, we can download public use microdata from the American Community Survey and use that data to obtain target distributions.  
+
+For this demonstration, we will be using a condensed American Community Survey dataset called `acs_2017_excerpt`. This is not the original ACS dataset (which can be found [here](https://www.census.gov/programs-surveys/acs/data/pums.html)), but a summary table created using the 2017 1-year PUMS. It has columns for sex, age and education variables that have been recoded into the categories that Pew Research Center typically uses in its survey weighting. It has a total of 36 rows, one for every combination of sex (2 categories), age (6 categories) and education (3 categories). Each row is associated with a weight that is proportional to that row's share in the non-institutionalized U.S. adult population.  
+
+```{r show_acs_data}
+acs_2017_excerpt
+```
+
+When you begin this process from scratch, you'll need to acquire the benchmark data, recode variables into your desired categories, and use the appropriate weight that should be attached to the benchmark dataset. In this vignette, all of that work has already been done.
+
+We can use the function `create_raking_targets()` to create summaries of these demographic distributions from the benchmark dataset using the code below. "Raking" refers to a [procedure](https://www.pewresearch.org/methods/2018/01/26/how-different-weighting-methods-work/) in which the marginal distributions of a selected set of variables in the sample are iteratively adjusted to match target distributions.  
+
+```{r create_raking_targets}
+targets <- create_raking_targets(acs_2017_excerpt,
+                                 vars = c("recage", "sex:receduc"),
+                                 wt = "weight")
+```
+
+The first argument identifies the dataset to use in creating the targets. The `vars` argument lists the names of the variables to be summarized. When variable names are joined by a colon, it means we want the cross-classification or interaction between those variables. Finally, the `wt` argument takes the name of the weight variable that should be used for the calculation. If you do not specify a weight variable, `create_raking_targets()` will throw an error. This is to prevent you from accidentally creating incorrect weighting targets based on unweighted benchmark data [(not that we've ever done that ourselves...)](https://medium.com/pew-research-center-decoded/how-we-check-numbers-and-facts-at-pew-research-center-129bab2fc1ba)  
+
+The code above produces the following list containing the target distributions for age and sex by education. In each table, the `Freq` column contains the percentage of the total population belonging to each category, with each table summing to 100. These are the percentages we should expect to see in our own survey data after we've finished weighting.  
+
+```{r display_raking_targets}
+targets
+```
+
+While we could have come up with these percentages in a variety of ways, `create_raking_targets()` returns them in the format that is expected by the `rake_survey()` function that we'll use to perform the actual weighting. This format is also compatible with the `survey` package since this is what `rake_survey()` itself uses to do the computation.  
+
+## Cleaning and recoding survey data  
+
+To weight our survey, we need to have variables in our dataset that have exactly the same names, categories and labels as the variables in the list of weighting parameters. If we compare the categories in the variables in `dec13_excerpt` to our weighting targets above, we can see some important differences.  
+
+```{r display_levels}
+levels(dec13_excerpt$sex)
+levels(dec13_excerpt$recage)
+levels(dec13_excerpt$receduc)
+```
+
+In the survey data, `sex`, `recage` and `receduc` have categories and labels that match those in the weighting targets, but `recage` and `receduc` also have `DK/Ref` (short for "Don't Know/Refused") categories for respondents who declined to give an answer. The survey data also lacks a variable containing the cross-classification of age and education. Finally, the variable names in the weighting targets begin with the prefix "rk_" while the survey variables do not. We will need to iron out all of these inconsistencies before we can move on to weighting.  
+
+## Dealing with DK's  
+
+The `DK/Ref` responses to age and education pose a problem for weighting, because every respondent in the sample needs to have complete data on all the parameters that will be used for weighting. We get around this problem using imputation, which just means replacing the DK's with statistically plausible values from among the other categories. At the same time, we generally want to retain the `DK/Ref` responses in our dataset, because they can also tell us important things about the respondents.
+
+Instead of replacing the original `DK/Ref` values in our data, we'll make copies of all the variables, convert any `DK/Ref` values to `NA`, and impute the copies. By convention, we refer to these copies as the "raking" variables, and include the prefix "rk_" in their variable names so that they can be easily identified.  
+
+The `dk_to_na()` function makes it easy to create separate raking variables and get them ready for imputation by converting `DK/Ref` responses into `NA`. By default, the function will search for variations on the string "Don't Know/Refused" that appear frequently in Pew survey data, but you can substitute any other [regular expression](https://www.rstudio.com/wp-content/uploads/2016/09/RegExCheatsheet.pdf) if needed.  
+
+```{r dk_to_na}
+dec13_excerpt_raking <- dec13_excerpt %>%
+  mutate(rk_recage = dk_to_na(recage),
+         rk_receduc = dk_to_na(receduc),
+         rk_sex = dk_to_na(sex))
+```
+
+The `tablena()` function is a quick way to display a table that will display `NA` values by default if they exist. It also shows the name and class of any variables in the table. Looking at the bottom left corner of the table below, we can see that in our newly created variable `rk_recage`, the `DK/Ref` responses have been converted to `NA`. The variable name and its factor levels match the corresponding weighting target. All that's left is to impute the missing values.
+
+```{r tablena_recage}
+with(dec13_excerpt_raking, tablena(recage, rk_recage))
+```
+
+The `impute_vars()` function is a wrapper around the `mice()` function from the package of the same name that will singly impute specified variables in a dataset. (We use single imputation because weighting variables generally contain very small amounts of missing data that result in very little variability in the resulting survey weights at the end of the process, but you should exercise caution if you want to weight on variables with a lot of missing data.) The function is designed around this workflow, so by default it only imputes missing values for variables with the "rk_" prefix in their name. Alternatively, you can specify the variables to impute by passing a vector of variable names.  
+
+Below, we'll create a new dataset called `dec13_excerpt_imputed` where the missing values in the raking variables have been filled in. By default, `impute_vars()` uses a form of hot-deck imputation based on random forests and the `ranger` package. This is a very fast and convenient way to impute small amounts of item-missing data to facilitate weighting. The `seed` argument can be any number you want; it ensures that the imputation, which has some randomness built in, can be reproduced exactly every time as long as the same seed is used.
+
+```{r impute_raking_vars}
+dec13_excerpt_imputed <- impute_vars(dec13_excerpt_raking, seed = 739)
+```
+
+We can run `tablena()` again to confirm that the raking variables were successfully imputed.
+
+```{r confirm_impute_raking_vars}
+tablena(dec13_excerpt_imputed$rk_recage)
+tablena(dec13_excerpt_imputed$rk_receduc)
+```
+
+Finally, because we intend to weight on the cross-classification or interaction between sex and education, we create that variable using imputed sex and imputed education, making sure it has the same name and same factor levels as the target created by `create_raking_targets()`:  
+
+```{r create_interaction}
+dec13_excerpt_imputed <- dec13_excerpt_imputed %>%
+  mutate(rk_sex_receduc = interaction(rk_sex, rk_receduc, sep = ":"))
+```
+
+## Creating the weights  
+
+After creating raking targets from the population data and raking variables in the sample data, we can finally create the raking weight, which we'll call `weight2` (to differentiate from the dataset already having a "proper" `weight` variable).
+
+```{r rake_survey}
+dec13_excerpt <- dec13_excerpt %>%
+  mutate(weight2 = rake_survey(dec13_excerpt_imputed, pop_margins = targets))
+summary(dec13_excerpt$weight2)
+```
+
+The weight is created by calling `rake_survey` on the `dec13_excerpt_imputed` dataset we created, but we use `mutate` to attach this weight to the original `dec13_excerpt` dataset, setting aside all the additional temporary variables we created along the way. `rake_survey` also contains additional optional arguments for declaring a base weight, setting the amount of tolerance for the raking algorithm, and other such tweaks that you can look up using `?rake_survey` or `?survey::calibrate`, around which `rake_survey` is wrapped.  
+
+## Diagnostic tools  
+
+The `calculate_deff()` function can be used to obtain the Kish approximation of the design effect, as well as the effective sample size and a conservative margin of error estimate. 
+
+```{r calculate_deff}
+calculate_deff(dec13_excerpt$weight2)
+```
+
+The design effect `deff` here can be thought of as a multiplier representing additional variance in your estimates due to weighting. If you take your sample size `n` and divide it by `deff`, you'll get the effective sample size `ess`, which tells you the sample size of a true simple random sample with the same variance as your weighted survey. For example, even though `dec13_excerpt` has a raw sample size of `r round(calculate_deff(dec13_excerpt$weight2)$n, 0)`, the margin of error `moe` for `weight2` is `r round(calculate_deff(dec13_excerpt$weight2)$moe, 2)`, which is also what you would get if you had a simple random sample with a sample size of `r round(calculate_deff(dec13_excerpt$weight2)$ess, 0)`.  
+
+You should also confirm that the weighted estimates of weighting variables such as `rk_recage` match the weighting targets.  
+
+## Trimming weights  
+
+Weighing survey data in some cases results in particularly large or small weights, which can reduce the effective sample size. Weight trimming is one way to reduce the design effect from weighting by setting bounds on the maximum and minimum values of the weights. The tradeoff is that the weighted distributions of the weighting variables will deviate somewhat from the weighting targets.  
+
+The `trim_weights` function is a wrapper around `trimWeights` from the `survey` packages that allows you to trim survey weights by either defining lower and upper quantiles or minimum and maximum values to cut off. Survey researchers try to strike a balance between the design effect and the weighted sample composition, but there is no exact guideline for what this balance should look like. Here's an example of what the impact of a "5/95" trim on our demonstration weight would be on the effective sample size and on the weighted sample composition.  
+
+```{r trim_weights}
+dec13_excerpt <- dec13_excerpt %>%
+  mutate(weight2_trimmed = trim_weights(weight2, lower_quantile = 0.05, upper_quantile = 0.95))
+
+calculate_deff(dec13_excerpt$weight2)
+calculate_deff(dec13_excerpt$weight2_trimmed)
+
+get_totals("rk_recage", 
+           dec13_excerpt %>% left_join(dec13_excerpt_imputed %>% select(psraid, rk_recage)), 
+           wt = c("weight2", "weight2_trimmed"), digits = 1)
+```
+
+Trimming at "5/95" increased the effective sample size from `r round(calculate_deff(dec13_excerpt$weight2)$ess, 0)` to `r round(calculate_deff(dec13_excerpt$weight2_trimmed)$ess, 0)`, but also made the weighted distribution of age in the sample look slightly less like the population, particularly among people ages 25 to 34. For that last bit of code we used the `pewmethods` `get_totals` function, which allows for flexibly computing weighted crosstabs. I talk more about `get_totals` in the `pewmethods_exploring` vignette on exploring survey data and calculate weighted estimates.  
