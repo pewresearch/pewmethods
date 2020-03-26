@@ -1,8 +1,3 @@
----
-output:
-  word_document: default
-  html_document: default
----
 # pewmethods
 
 An R package developed by the Pew Research Center Methods team for working with survey data.
@@ -26,6 +21,8 @@ R 3.5 or greater
 2. Install **pewmethods** via:  
 
 ```install_github("pewresearch/pewmethods", build_vignettes = TRUE)```
+
+Vignettes require the **rmarkdown** and **tidyverse** packages. You can install the package without vignettes by setting build_vignettes to FALSE.  
 
 ## Use Policy
 
